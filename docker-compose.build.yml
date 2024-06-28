@@ -3,5 +3,5 @@ services:
   build-release:
     build: .
     volumes:
-      - $PWD/build:/go/src/github.com/suyashkumar/ssl-proxy/build
+      - /home/victor/repos/ssl-proxy-dual-domain/build:/go/src/github.com/suyashkumar/ssl-proxy/build
     command: make release
