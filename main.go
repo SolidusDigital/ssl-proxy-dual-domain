@@ -53,6 +53,12 @@ func main() {
 		}
 	}
 
+	// Print the domain map
+	log.Println("Domain to Proxy Map:")
+	for domain, proxy := range domainToProxyMap {
+		log.Printf("  %s -> %s\n", domain, proxy)
+	}
+
 	validCertFile := *certFile != ""
 	validKeyFile := *keyFile != ""
 	validDomains := *domains != ""
