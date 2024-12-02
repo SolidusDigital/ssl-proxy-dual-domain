@@ -23,6 +23,7 @@ var (
 	domains      = flag.String("domains", "", "comma-separated list of domains to mint letsencrypt certificates for. Usage of this parameter implies acceptance of the LetsEncrypt terms of service.")
 	redirectHTTP = flag.Bool("redirectHTTP", false, "if true, redirects http requests from port 80 to https at your fromURL")
 	cacheDir     = flag.String("cacheDir", "certs", "directory to store cached certificates") // Define the cacheDir flag
+	domainMap    = flag.String("domainMap", "", "comma-separated list of domain=proxy mappings (e.g., example1.com=http://127.0.0.1:8081,example2.com=http://127.0.0.1:8082)")
 	domainToProxyMap = map[string]string{
 		"example1.com": "http://127.0.0.1:8081",
 		"example2.com": "http://127.0.0.1:8082",
@@ -38,6 +39,19 @@ const (
 
 func main() {
 	flag.Parse()
+
+	// Parse domain-to-proxy mappings
+	if *domainMap != "" {
+		mappings := strings.Split(*domainMap, ",")
+		for _, mapping := range mappings {
+			parts := strings.Split(mapping, "=")
+			if len(parts) == 2 {
+				domainToProxyMap[parts[0]] = parts[1]
+			} else {
+				log.Fatalf("Invalid domain mapping: %s", mapping)
+			}
+		}
+	}
 
 	validCertFile := *certFile != ""
 	validKeyFile := *keyFile != ""
@@ -76,12 +90,6 @@ func main() {
 	if !strings.HasPrefix(*to, HTTPPrefix) && !strings.HasPrefix(*to, HTTPSPrefix) {
 		*to = HTTPPrefix + *to
 		log.Println("Assuming -to URL is using http://")
-	}
-
-	// Parse toURL as a URL
-	toURL, err := url.Parse(*to)
-	if err != nil {
-		log.Fatal("Unable to parse 'to' url: ", err)
 	}
 
 	// Setup reverse proxy ServeMux
