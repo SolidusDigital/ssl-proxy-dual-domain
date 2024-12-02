@@ -23,6 +23,10 @@ var (
 	domains      = flag.String("domains", "", "comma-separated list of domains to mint letsencrypt certificates for. Usage of this parameter implies acceptance of the LetsEncrypt terms of service.")
 	redirectHTTP = flag.Bool("redirectHTTP", false, "if true, redirects http requests from port 80 to https at your fromURL")
 	cacheDir     = flag.String("cacheDir", "certs", "directory to store cached certificates") // Define the cacheDir flag
+	domainToProxyMap = map[string]string{
+		"example1.com": "http://127.0.0.1:8081",
+		"example2.com": "http://127.0.0.1:8082",
+	}
 )
 
 const (
@@ -81,11 +85,24 @@ func main() {
 	}
 
 	// Setup reverse proxy ServeMux
-	p := reverseproxy.Build(toURL)
 	mux := http.NewServeMux()
-	mux.Handle("/", p)
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		host := r.Host
+		target, ok := domainToProxyMap[host]
+		if !ok {
+			http.Error(w, "Forbidden", http.StatusForbidden)
+			return
+		}
+		targetURL, err := url.Parse(target)
+		if err != nil {
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+			return
+		}
+		p := reverseproxy.Build(targetURL)
+		p.ServeHTTP(w, r)
+	})
 
-	log.Printf(green("Proxying calls from https://%s (SSL/TLS) to %s"), *fromURL, toURL)
+	log.Printf(green("Proxying calls from https://%s (SSL/TLS) to respective endpoints based on domain"), *fromURL)
 
 	// Redirect http requests on port 80 to TLS port using https
 	if *redirectHTTP {
