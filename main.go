@@ -114,18 +114,17 @@ func main() {
 
 	// Redirect http requests on port 80 to TLS port using https
 	if *redirectHTTP {
-		// Redirect to fromURL by default, unless a domain is specified--in that case, redirect using the public facing
-		// domain
-		redirectURL := *fromURL
-		if validDomains {
-			redirectURL = strings.Split(*domains, ",")[0]
-		}
-		redirectTLS := func(w http.ResponseWriter, r *http.Request) {
-			http.Redirect(w, r, "https://"+redirectURL+r.RequestURI, http.StatusMovedPermanently)
-		}
 		go func() {
-			log.Println(
-				fmt.Sprintf("Also redirecting http requests on port 80 to https requests on %s", redirectURL))
+			redirectTLS := func(w http.ResponseWriter, r *http.Request) {
+				host := r.Host
+				redirectURL, ok := domainToProxyMap[host]
+				if !ok {
+					http.Error(w, "Forbidden", http.StatusForbidden)
+					return
+				}
+				http.Redirect(w, r, "https://"+host+r.RequestURI, http.StatusMovedPermanently)
+			}
+			log.Println("Also redirecting http requests on port 80 to https requests based on domain mapping")
 			err := http.ListenAndServe(":80", http.HandlerFunc(redirectTLS))
 			if err != nil {
 				log.Println("HTTP redirection server failure")
