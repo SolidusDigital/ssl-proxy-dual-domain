@@ -1,8 +1,8 @@
-
 version: '2'
 services:
   build-release:
     build: .
     volumes:
-      - /home/victor/repos/411data/ssl-proxy-dual-domain/build:/go/src/github.com/suyashkumar/ssl-proxy/build
+      - /home/victor/repos/ssl-proxy-dual-domain/build:/go/src/github.com/suyashkumar/ssl-proxy/build
+      - /home/victor/repos/ssl-proxy-dual-domain/certs:/go/src/github.com/suyashkumar/ssl-proxy/certs # Mount certs directory
     command: make release
