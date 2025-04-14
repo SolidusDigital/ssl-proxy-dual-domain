@@ -150,7 +150,7 @@ func main() {
 			}
 			if !ipAllowed {
 				log.Printf("Rejected connection from IP %s to host %s", clientIP, host)
-				http.Error(w, "Forbidden - IP not allowed", http.StatusForbidden)
+				http.Error(w, "Forbidden", http.StatusForbidden)
 				return
 			}
 		}
