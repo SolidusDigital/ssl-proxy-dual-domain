@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -16,18 +17,17 @@ import (
 )
 
 var (
-	to           = flag.String("to", "http://127.0.0.1:80", "the address and port for which to proxy requests to")
-	fromURL      = flag.String("from", "127.0.0.1:443", "the tcp address and port this proxy should listen for requests on")
-	certFile     = flag.String("cert", "", "path to a tls certificate file. If not provided, ssl-proxy will generate one for you in ~/.ssl-proxy/")
-	keyFile      = flag.String("key", "", "path to a private key file. If not provided, ssl-proxy will generate one for you in ~/.ssl-proxy/")
-	domains      = flag.String("domains", "", "comma-separated list of domains to mint letsencrypt certificates for. Usage of this parameter implies acceptance of the LetsEncrypt terms of service.")
-	redirectHTTP = flag.Bool("redirectHTTP", false, "if true, redirects http requests from port 80 to https at your fromURL")
-	cacheDir     = flag.String("cacheDir", "certs", "directory to store cached certificates") // Define the cacheDir flag
-	domainMap    = flag.String("domainMap", "", "comma-separated list of domain=proxy mappings (e.g., example1.com=http://127.0.0.1:8081,example2.com=http://127.0.0.1:8082)")
-	domainToProxyMap = map[string]string{
-		"example1.com": "http://127.0.0.1:8081",
-		"example2.com": "http://127.0.0.1:8082",
-	}
+	to              = flag.String("to", "http://127.0.0.1:80", "the address and port for which to proxy requests to")
+	fromURL         = flag.String("from", "127.0.0.1:443", "the tcp address and port this proxy should listen for requests on")
+	certFile        = flag.String("cert", "", "path to a tls certificate file")
+	keyFile         = flag.String("key", "", "path to a private key file")
+	domains         = flag.String("domains", "", "comma-separated list of domains to mint letsencrypt certificates for")
+	redirectHTTP    = flag.Bool("redirectHTTP", false, "if true, redirects http requests from port 80 to https at your fromURL")
+	cacheDir        = flag.String("cacheDir", "certs", "directory to store cached certificates")
+	domainMap       = flag.String("domainMap", "", "comma-separated list of domain=proxy mappings")
+	ipFilterMap     = flag.String("ipFilterMap", "", "comma-separated list of domain=ip1|ip2|ip3 mappings")
+	domainToProxyMap = map[string]string{}
+	domainAllowedIPs = map[string][]string{}
 )
 
 const (
@@ -54,10 +54,32 @@ func main() {
 		}
 	}
 
-	// Print the domain map
-	log.Println("Domain to Proxy Map:")
-	for domain, proxy := range domainToProxyMap {
-		log.Printf("  %s -> %s\n", domain, proxy)
+	// Added debugging to ensure all IPs in the list are processed independently
+	if *ipFilterMap != "" {
+		mappings := strings.Split(*ipFilterMap, ",")
+		for _, mapping := range mappings {
+			parts := strings.SplitN(mapping, "=", 2)
+			if len(parts) != 2 {
+				log.Printf("Skipping invalid IP filter mapping: %s. Ensure it follows the format domain=ip1|ip2|ip3", mapping)
+				continue
+			}
+			domain := parts[0]
+			ips := strings.Split(parts[1], "|")
+			log.Printf("Processing IP list for domain %s: %v", domain, ips)
+			for i, ip := range ips {
+				log.Printf("Processing IP: %s", ip)
+				trimmedIP := strings.TrimSpace(strings.Trim(ip, "[]")) // Normalize IPv6
+				log.Printf("Trimmed IP: %s", trimmedIP)
+				parsedIP := net.ParseIP(trimmedIP)
+				if parsedIP == nil {
+					log.Fatalf("Invalid IP address: %s in mapping for domain %s", trimmedIP, domain)
+				}
+				log.Printf("Parsed IP: %s", parsedIP.String())
+				ips[i] = trimmedIP
+			}
+			domainAllowedIPs[domain] = ips
+			log.Printf("IP filter for %s: %v", domain, ips)
+		}
 	}
 
 	validCertFile := *certFile != ""
@@ -101,6 +123,7 @@ func main() {
 
 	// Setup reverse proxy ServeMux
 	mux := http.NewServeMux()
+	// Added debugging logs to trace IP filtering logic
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		host := r.Host
 		log.Printf("Received request for host: %s", host)
@@ -110,6 +133,28 @@ func main() {
 			http.Error(w, "Forbidden", http.StatusForbidden)
 			return
 		}
+
+		// Apply IP filtering if defined
+		if allowedIPs, exists := domainAllowedIPs[host]; exists {
+			clientIP := getClientIP(r)
+			log.Printf("Client IP for %s: %s", host, clientIP)
+			log.Printf("Allowed IPs for %s: %v", host, allowedIPs)
+
+			ipAllowed := false
+			for _, allowed := range allowedIPs {
+				log.Printf("Comparing client IP %s with allowed IP %s", clientIP, allowed)
+				if net.ParseIP(clientIP).Equal(net.ParseIP(allowed)) { // Use net.ParseIP for accurate comparison
+					ipAllowed = true
+					break
+				}
+			}
+			if !ipAllowed {
+				log.Printf("Rejected connection from IP %s to host %s", clientIP, host)
+				http.Error(w, "Forbidden - IP not allowed", http.StatusForbidden)
+				return
+			}
+		}
+
 		targetURL, err := url.Parse(target)
 		if err != nil {
 			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
@@ -127,52 +172,60 @@ func main() {
 		go func() {
 			redirectTLS := func(w http.ResponseWriter, r *http.Request) {
 				host := r.Host
-				log.Printf("Received HTTP request for host: %s", host)
 				_, ok := domainToProxyMap[host]
 				if !ok {
-					log.Printf("No mapping found for host: %s", host)
 					http.Error(w, "Forbidden", http.StatusForbidden)
 					return
 				}
 				http.Redirect(w, r, "https://"+host+r.RequestURI, http.StatusMovedPermanently)
 			}
-			log.Println("Also redirecting http requests on port 80 to https requests based on domain mapping")
+			log.Println("Redirecting HTTP (port 80) to HTTPS")
 			err := http.ListenAndServe(":80", http.HandlerFunc(redirectTLS))
 			if err != nil {
-				log.Println("HTTP redirection server failure")
-				log.Println(err)
+				log.Println("HTTP redirection server error:", err)
 			}
 		}()
 	}
 
-	// Determine if we should serve over TLS with autogenerated LetsEncrypt certificates or not
 	if validDomains {
-		// Domain is present, use autocert
 		domainList := strings.Split(*domains, ",")
-		log.Printf("Domains specified, using LetsEncrypt to autogenerate and serve certs for %v\n", domainList)
+		log.Printf("Using LetsEncrypt for domains: %v", domainList)
 		if (!strings.HasSuffix(*fromURL, ":443")) {
-			log.Println("WARN: Right now, you must serve on port :443 to use autogenerated LetsEncrypt certs using the -domains flag, this may NOT WORK")
+			log.Println("WARNING: LetsEncrypt typically requires port 443")
 		}
 		m := &autocert.Manager{
-			Cache:      autocert.DirCache(*cacheDir), // Use the cacheDir flag here
+			Cache:      autocert.DirCache(*cacheDir),
 			Prompt:     autocert.AcceptTOS,
 			HostPolicy: autocert.HostWhitelist(domainList...),
 		}
 		s := &http.Server{
 			Addr:      *fromURL,
 			TLSConfig: m.TLSConfig(),
+			Handler:   mux,
 		}
-		s.Handler = mux
 		log.Fatal(s.ListenAndServeTLS("", ""))
 	} else {
-		// Domain is not provided, serve TLS using provided/generated certificate files
 		log.Fatal(http.ListenAndServeTLS(*fromURL, *certFile, *keyFile, mux))
 	}
 }
 
-// green takes an input string and returns it with the proper ANSI escape codes to render it green-colored
-// in a supported terminal.
-// TODO: if more colors used in the future, generalize or pull in an external pkg
+// Updated getClientIP to normalize IPv6 addresses by removing square brackets
+func getClientIP(r *http.Request) string {
+	xff := r.Header.Get("X-Forwarded-For")
+	if xff != "" {
+		parts := strings.Split(xff, ",")
+		ip := strings.TrimSpace(parts[0])
+		log.Printf("Extracted IP from X-Forwarded-For: %s", ip)
+		return ip
+	}
+	ip := r.RemoteAddr
+	if colon := strings.LastIndex(ip, ":"); colon != -1 {
+		ip = ip[:colon]
+	}
+	log.Printf("Extracted IP from RemoteAddr: %s", ip)
+	return ip
+}
+
 func green(in string) string {
 	return fmt.Sprintf("\033[0;32m%s\033[0;0m", in)
 }
