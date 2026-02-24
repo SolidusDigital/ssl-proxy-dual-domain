@@ -127,6 +127,10 @@ func main() {
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		host := r.Host
 		log.Printf("Received request for host: %s", host)
+		log.Printf("Remote address: %s", r.RemoteAddr)
+		log.Printf("User-Agent: %s", r.Header.Get("User-Agent"))
+		log.Printf("X-Forwarded-For: %s", r.Header.Get("X-Forwarded-For"))
+		log.Printf("X-Real-IP: %s", r.Header.Get("X-Real-IP"))
 		target, ok := domainToProxyMap[host]
 		if !ok {
 			log.Printf("No mapping found for host: %s", host)
@@ -160,7 +164,8 @@ func main() {
 			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 			return
 		}
-		log.Printf("Request URL: %s, Upstream Proxy URL: %s", r.URL.String(), targetURL.String())
+		clientIP := getClientIP(r)
+		log.Printf("Request URL: %s, Upstream Proxy URL: %s, Client IP: %s", r.URL.String(), targetURL.String(), clientIP)
 		p := reverseproxy.Build(targetURL)
 		p.ServeHTTP(w, r)
 	})
